@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=80.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent_function_tool"
+description = "Universal wrapper for Python functions to be used with LLM function calling"
+readme = { file = "README.md", content-type = "text/markdown" }
+keywords = ["ai-agent", "large-language-model", "function-calling", "tool-calling"]
+license = "MIT"
+authors = [
+    { name = "Levente Hunyadi", email = "hunyadi@gmail.com" }
+]
+maintainers = [
+    { name = "Levente Hunyadi", email = "hunyadi@gmail.com" }
+]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Human Machine Interfaces",
+    "Topic :: Scientific/Engineering :: Interface Engine/Protocol Translator",
+    "Topic :: File Formats :: JSON :: JSON Schema",
+    "Topic :: Utilities",
+    "Typing :: Typed"
+]
+dependencies = [
+    "pydantic >= 2.11",
+    "typing_extensions >= 4.15; python_version < '3.12'"
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = [
+    "ruff >= 0.12"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/hunyadi/function_tool"
+"Source" = "https://github.com/hunyadi/function_tool"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["function_tool"]
+zip-safe = true
+
+[tool.setuptools.dynamic]
+version = { attr = "function_tool.__version__" }
+
+[tool.setuptools.package-data]
+"function_tool" = ["py.typed"]
+
+[tool.ruff]
+line-length = 160
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "I", "Q"]
