@@ -506,9 +506,9 @@ def get_schema(func: Callable[..., Any]) -> JsonType:
 
 
 def _is_subclass_method(func: Callable[..., Any]) -> bool:
-    "True if the method is implemented in a subclass of `FunctionTool` but not `FunctionTool` itself."
+    "True if the method is implemented in a subclass of `FunctionToolGroup` but not `FunctionToolGroup` itself."
 
-    return isinstance(func, MethodType) and not func.__qualname__.startswith(FunctionTool.__name__ + ".")
+    return isinstance(func, MethodType) and not func.__qualname__.startswith(FunctionToolGroup.__name__ + ".")
 
 
 def _is_standard_method(func: Callable[..., Any]) -> bool:
@@ -519,9 +519,9 @@ def _is_async_method(func: Callable[..., Any]) -> bool:
     return inspect.iscoroutinefunction(func) and _is_subclass_method(func)
 
 
-class FunctionTool:
+class FunctionToolGroup:
     """
-    A class to be passed to the parameter `tools` when creating a model with the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses).
+    A class whose functions are to be passed to the parameter `tools` when creating a model with the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses).
 
     Derive from this class when implementing your own class with functions exposed for LLM user-defined function calling.
     """

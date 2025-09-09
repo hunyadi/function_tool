@@ -1,34 +1,25 @@
-# Python wrapper for LLM function calling
+import asyncio
+import os
+import typing
+from asyncio import Task, TaskGroup
+from dataclasses import dataclass
+from pathlib import Path
 
-Function calling provides a powerful and flexible way for Large Language Models (LLMs) such as [OpenAI](https://platform.openai.com/docs/guides/function-calling) and [Anthropic](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview) models to interface with external systems (e.g. execute actions on the user's behalf) and access data outside their training data (e.g. search an internal database).
+from openai import AsyncOpenAI, AsyncStream
+from openai.types.responses.function_tool_param import FunctionToolParam
+from openai.types.responses.response_function_call_arguments_done_event import ResponseFunctionCallArgumentsDoneEvent
+from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
+from openai.types.responses.response_function_tool_call_param import ResponseFunctionToolCallParam
+from openai.types.responses.response_input_item_param import ResponseInputItemParam
+from openai.types.responses.response_input_param import FunctionCallOutput
+from openai.types.responses.response_output_item_added_event import ResponseOutputItemAddedEvent
+from openai.types.responses.response_stream_event import ResponseStreamEvent
+from pydantic import Field
 
-This Python module provides facilities to wrap Python classes and functions such that they can be passed to the `tools` parameter when creating a model with the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses/create#responses_create-tools) or [Claude API](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/implement-tool-use#specifying-client-tools) in Python. Specifically, it automatically generates a JSON schema from the function signature, doc-string and [Pydantic](https://docs.pydantic.dev/) `Field` definitions of parameters of `BaseModel` type, and unwraps/wraps input/output, filtering and propagating exceptions.
+from function_tool import AsyncInvocable, FunctionToolGroup, ToolBaseModel
 
-## Features
 
-* generates JSON schema based on function signature
-* utilizes `Field` in parameters of types deriving from `BaseModel`
-* supports both standard and `async` Python functions
-* supports exposing all methods of a Python class eligible for function calling
-* marshals input/output between LLM model and Python function
-* catches and wraps exceptions
-
-## Example
-
-Below you find a comprehensive example in which we
-
-* define a tool group with invocable functions
-* create an asynchronous event stream with OpenAI's Responses API
-* process the response stream to collect tool calls
-* invoke tools concurrently supplying collected arguments
-* transform tool inputs and outputs into messages that we can pass as inputs to subsequent Response API calls
-
-### Define a tool group
-
-First, define a class that derives from `FunctionToolGroup`, and implement member functions that take no parameters, or a single parameter of type `str`, `B` or `list[B]` where `B` derives from `ToolBaseModel`:
-
-<!-- Example 1 -->
-```py
+### <<< EXAMPLE 1 <<< ###
 class SearchQuery(ToolBaseModel):
     "Finds relevant documents in a database."
 
@@ -58,25 +49,50 @@ class SearchToolGroup(FunctionToolGroup):
         rows: list[dict[str, typing.Any]] = []
         rows.extend(await self.connection.execute(sql))  # type: ignore
         return [SearchResultItem(id=row["id"], content=row["content"], similarity=row["similarity"]) for row in rows]
-```
 
-Next, generate tools by calling `tool_group.async_invocables()` on the tool group, which discovers eligible functions:
 
-<!-- Example 2 -->
-```py
-# create function tool group
-tool_group = SearchToolGroup(connection)
+### >>> EXAMPLE 1 >>> ###
 
-# create invocables
-tools = tool_group.async_invocables()
-```
 
-### Create a response stream
+def main() -> None:
+    # create GPT client
+    client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-Pass the list of tools obtained from the tool group to create a response stream using OpenAI's Response API:
+    # create a database connection
+    connection = object()
 
-<!-- Example 3 -->
-```py
+    ### <<< EXAMPLE 2 <<< ###
+    # create function tool group
+    tool_group = SearchToolGroup(connection)
+
+    # create invocables
+    tools = tool_group.async_invocables()
+    ### >>> EXAMPLE 2 >>> ###
+
+    asyncio.run(create_stream_execute_tools(client, tools))
+
+
+async def create_stream_execute_tools(client: AsyncOpenAI, tools: list[AsyncInvocable]) -> None:
+    """
+    Skeleton for a single iteration of creating a model response stream with active tools, processing the stream, and calling any functions invoked by the LLM.
+
+    This function would typically be called in a loop, feeding the output of function calls back as model input messages.
+    """
+
+    # create response stream
+    prompt = "..."
+    messages: list[ResponseInputItemParam] = []  # prior messages in the conversation
+    active_tools = tools  # select tools that are compatible with prompt
+    stream = await create_with_tools(client, prompt, messages, active_tools)
+
+    # process response stream
+    tool_calls = await process_response_stream(stream)
+
+    # invoke Python implementation and generate tool call request and response messages
+    messages = await invoke_tools(tools, tool_calls)
+
+
+### <<< EXAMPLE 3 <<< ###
 async def create_with_tools(
     client: AsyncOpenAI, prompt: str, messages: list[ResponseInputItemParam], tools: list[AsyncInvocable]
 ) -> AsyncStream[ResponseStreamEvent]:
@@ -109,14 +125,42 @@ async def create_with_tools(
             for tool in tools
         ],
     )
-```
 
-### Process response stream
 
-Process the events in the response stream, registering any function calls that the GPT LLM requests to invoke:
+### >>> EXAMPLE 3 >>> ###
 
-<!-- Example 4 -->
-```py
+
+@dataclass
+class ToolRef:
+    """
+    Identifies a function call.
+
+    :param call_id: Couples call request with response.
+    :param name: Name of the function to invoke.
+    """
+
+    call_id: str
+    name: str
+
+
+@dataclass
+class ToolCall:
+    """
+    Data required to invoke a function with actual arguments.
+
+    :param id: Identifies the function call response item.
+    :param call_id: Couples call request with response.
+    :param name: Name of the function to invoke.
+    :param args: Arguments to pass to the function, serialized as a JSON string.
+    """
+
+    id: str
+    call_id: str
+    name: str
+    args: str
+
+
+### <<< EXAMPLE 4 <<< ###
 async def process_response_stream(events: AsyncStream[ResponseStreamEvent]) -> list[ToolCall]:
     """
     Processes events in a response stream.
@@ -142,14 +186,12 @@ async def process_response_stream(events: AsyncStream[ResponseStreamEvent]) -> l
             pass
 
     return tool_calls
-```
 
-### Execute function call requests
 
-Finally, execute the function call requests by the GPT LLM concurrently and feed back call output as input messages to the GPT LLM:
+### >>> EXAMPLE 4 >>> ###
 
-<!-- Example 5 -->
-```py
+
+### <<< EXAMPLE 5 <<< ###
 async def invoke_tools(tools: list[AsyncInvocable], tool_calls: list[ToolCall]) -> list[ResponseInputItemParam]:
     """
     Calls user-defined tools invoked by the LLM.
@@ -191,10 +233,29 @@ async def invoke_tools(tools: list[AsyncInvocable], tool_calls: list[ToolCall]) 
         )
 
     return messages
-```
 
-## Implementation
 
-`ToolBaseModel` configures how the JSON schema is generated by Pydantic such `additionalProperties` are disallowed to ensure compliance with OpenAI's function tool calling convention in *strict* mode. Otherwise, `ToolBaseModel` is equivalent to a plain Pydantic `BaseModel`.
+### >>> EXAMPLE 5 >>> ###
 
-The implementation makes use of partial type erasure, erasing `B` (a sub-class of `ToolBaseModel`) to `ToolBaseModel`, and `list[B]` to `list[ToolBaseModel]`. This lowers the number of possible input/output combinations that need to be generated, yet allows functions such as `model_json_schema` and `model_validate_json` to be called in context as necessary. This allows us to eagerly evaluate some expressions, and elide function calls.
+
+if __name__ == "__main__":
+    import re
+    import textwrap
+
+    examples: dict[int, str] = {}
+
+    with open(Path(__file__).parent / "example.py", "r") as f:
+        content = f.read()
+        for m in re.finditer(r"^\s*### <<< EXAMPLE (\d+) <<< ###$\n(.+?\n)^\s*### >>> EXAMPLE \1 >>> ###$", content, flags=re.DOTALL | re.MULTILINE):
+            examples[int(m.group(1))] = textwrap.dedent(m.group(2))
+
+    def repl(m: re.Match[str]) -> str:
+        ref = int(m.group(1))
+        return f"<!-- Example {ref} -->\n```py\n{examples[ref]}```"
+
+    with open(Path(__file__).parent / "README.md", "r") as f:
+        content = f.read()
+        content = re.sub(r"^<!-- Example (\d+) -->$\n^```py$\n.*?^```$", repl, content, flags=re.DOTALL | re.MULTILINE)
+
+    with open(Path(__file__).parent / "README.md", "w") as f:
+        f.write(content)
