@@ -7,7 +7,7 @@ from uuid import UUID
 
 from pydantic import Field
 
-from function_tool import ToolBaseModel, create_async_invocable, create_invocable, generate_code, get_schema
+from function_tool import FunctionToolGroup, ToolBaseModel, create_async_invocable, create_invocable, generate_code, get_schema, invocable
 
 
 class SchemaTypes(ToolBaseModel):
@@ -78,22 +78,37 @@ class ForecastResponse(ToolBaseModel):
     weather: Weather
 
 
-class WeatherForecastTool:
+class WeatherForecastTool(FunctionToolGroup):
+    def __init__(self) -> None:
+        pass
+
+    @classmethod
+    def class_function(cls) -> None:
+        pass
+
+    @staticmethod
+    def static_function() -> None:
+        pass
+
+    @invocable
     def passthru(self, data: str) -> str:
         "A function that consumes and produces unstructured text."
 
         return data
 
+    @invocable
     def get_location(self) -> Location:
         "A function that produces data that conforms to a schema."
 
         return Location(city="Budapest", country="Hungary")
 
+    @invocable
     def get_locations(self) -> list[Location]:
         "A function that produces a list of items."
 
         return [Location(city="Budapest", country="Hungary"), Location(city="Veszprém", country="Hungary")]
 
+    @invocable
     def get_state(self, location: Location) -> Weather:
         "A function that consumes data that conforms to a schema."
 
@@ -104,29 +119,37 @@ class WeatherForecastTool:
 
         return Weather(temperature=20, wind=Wind(speed=5, direction=CardinalDirection.NORTH), humidity=40, precipitation=30, cloudiness=20)
 
+    @invocable
     def do_action(self, weather: Weather) -> None:
         "A function that succeeds or fails but has no explicit return value."
 
         pass
 
+    @invocable
     def get_forecast(self, request: ForecastRequest) -> ForecastResponse:
         return ForecastResponse(weather=Weather(temperature=30, wind=None, humidity=20, precipitation=0, cloudiness=0))
 
+    @invocable
     async def async_passthru(self, data: str) -> str:
         return data
 
+    @invocable
     async def async_get_location(self) -> Location:
         return self.get_location()
 
+    @invocable
     async def async_get_locations(self) -> list[Location]:
         return self.get_locations()
 
+    @invocable
     async def async_get_state(self, location: Location) -> Weather:
         return self.get_state(location)
 
+    @invocable
     async def async_do_action(self, weather: Weather) -> None:
         pass
 
+    @invocable
     async def async_get_forecast(self, request: ForecastRequest) -> ForecastResponse:
         return self.get_forecast(request)
 
@@ -148,6 +171,20 @@ class TestFunctionTool(unittest.TestCase):
 
     def test_code(self) -> None:
         generate_code()
+
+    def test_invocables(self) -> None:
+        tool = WeatherForecastTool()
+        self.assertCountEqual(
+            tool.invocables(),
+            [
+                create_invocable(tool.passthru),
+                create_invocable(tool.get_location),
+                create_invocable(tool.get_locations),
+                create_invocable(tool.get_state),
+                create_invocable(tool.do_action),
+                create_invocable(tool.get_forecast),
+            ],
+        )
 
     def test_schema(self) -> None:
         self.maxDiff = None
@@ -273,6 +310,20 @@ class TestFunctionTool(unittest.TestCase):
 
 
 class TestAsyncFunctionTool(unittest.IsolatedAsyncioTestCase):
+    async def test_invocables(self) -> None:
+        tool = WeatherForecastTool()
+        self.assertCountEqual(
+            tool.async_invocables(),
+            [
+                create_async_invocable(tool.async_passthru),
+                create_async_invocable(tool.async_get_location),
+                create_async_invocable(tool.async_get_locations),
+                create_async_invocable(tool.async_get_state),
+                create_async_invocable(tool.async_do_action),
+                create_async_invocable(tool.async_get_forecast),
+            ],
+        )
+
     async def test_schema(self) -> None:
         forecast = WeatherForecastTool()
         self.assertEqual(get_schema(forecast.async_passthru), get_schema(forecast.passthru))

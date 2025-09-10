@@ -61,6 +61,7 @@ class ToolBaseModel(BaseModel):
 
 B = TypeVar("B", bound=ToolBaseModel)
 R = TypeVar("R", bound=ToolBaseModel)
+F = TypeVar("F", bound=Callable[..., Any])
 
 
 class ToolException(Exception):
@@ -126,6 +127,17 @@ class BaseInvocable(ABC):
         "Returns the JSON schema for the parameter passed to the function."
 
         ...
+
+    def __eq__(self, value: object) -> bool:
+        if not isinstance(value, BaseInvocable) or value.__class__ is not self.__class__:
+            return False
+        else:
+            left = self.function
+            right = value.function
+            if isinstance(left, MethodType) and isinstance(right, MethodType):
+                return left.__func__ is right.__func__ and left.__self__ is right.__self__
+            else:
+                return left is right
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self.name})"
@@ -505,18 +517,57 @@ def get_schema(func: Callable[..., Any]) -> JsonType:
         return typing.cast(JsonType, TypeAdapter(input_type).json_schema(schema_generator=GenerateJsonSchemaNoTitles))
 
 
-def _is_subclass_method(func: Callable[..., Any]) -> bool:
-    "True if the method is implemented in a subclass of `FunctionToolGroup` but not `FunctionToolGroup` itself."
+def _is_eligible_function(func: Callable[..., Any]) -> bool:
+    "True if the bound or unbound method is eligible for user-defined function calling."
 
-    return isinstance(func, MethodType) and not func.__qualname__.startswith(FunctionToolGroup.__name__ + ".")
+    # skip magic methods
+    if func.__name__.startswith("__") and func.__name__.endswith("__"):
+        return False
+
+    # verify if the method is implemented in a subclass of `FunctionToolGroup` but not `FunctionToolGroup` itself
+    if func.__qualname__.startswith(FunctionToolGroup.__name__ + "."):
+        return False
+
+    # skip functions with mismatched input signature
+    sig = inspect.signature(func)
+    parameters = list(sig.parameters.values())
+    if not isinstance(func, MethodType):
+        if not parameters or parameters[0].name != "self":
+            # unbound methods must have at least the parameter `self`
+            return False
+        parameters = parameters[1:]
+    if len(parameters) > 1:
+        return False
+    elif len(parameters) > 0:
+        input_param = parameters[0]
+        input_type = input_param.annotation
+        if input_type is inspect.Parameter.empty or not is_func_tool_type(input_type):
+            return False
+
+    # skip functions with mismatched output signature
+    output_type = sig.return_annotation
+    if output_type is inspect.Parameter.empty or not is_func_tool_type(output_type):
+        return False
+
+    return True
+
+
+def _is_eligible_method(func: Callable[..., Any]) -> bool:
+    "True if the bound method is eligible for user-defined function calling."
+
+    # include bound methods, skip fields, properties, class and static methods
+    if not isinstance(func, MethodType):
+        return False
+
+    return _is_eligible_function(func)
 
 
 def _is_standard_method(func: Callable[..., Any]) -> bool:
-    return not inspect.iscoroutinefunction(func) and _is_subclass_method(func)
+    return not inspect.iscoroutinefunction(func) and _is_eligible_method(func)
 
 
 def _is_async_method(func: Callable[..., Any]) -> bool:
-    return inspect.iscoroutinefunction(func) and _is_subclass_method(func)
+    return inspect.iscoroutinefunction(func) and _is_eligible_method(func)
 
 
 class FunctionToolGroup:
@@ -539,3 +590,12 @@ class FunctionToolGroup:
         "Returns a list of asynchronous functions this tool exposes."
 
         return [create_async_invocable(method) for _, method in inspect.getmembers(self, predicate=_is_async_method) if method.__self__ is self]
+
+
+def invocable(func: F) -> F:
+    "Decorator to verify if a member function can be passed to `create_invocable` or `create_async_invocable`."
+
+    if isinstance(func, classmethod) or isinstance(func, staticmethod) or not _is_eligible_function(func):
+        raise TypeError(f"expected: a method eligible for function calling; got: {func.__name__}")
+
+    return func
