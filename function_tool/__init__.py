@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from types import CodeType, MethodType
-from typing import Any, TypeGuard, TypeVar
+from typing import Any, NoReturn, ParamSpec, TypeGuard, TypeVar
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic.config import ConfigDict
@@ -61,7 +61,6 @@ class ToolBaseModel(BaseModel):
 
 B = TypeVar("B", bound=ToolBaseModel)
 R = TypeVar("R", bound=ToolBaseModel)
-F = TypeVar("F", bound=Callable[..., Any])
 
 
 class ToolException(Exception):
@@ -520,8 +519,12 @@ def get_schema(func: Callable[..., Any]) -> JsonType:
 def _is_eligible_function(func: Callable[..., Any]) -> bool:
     "True if the bound or unbound method is eligible for user-defined function calling."
 
-    # skip magic methods
-    if func.__name__.startswith("__") and func.__name__.endswith("__"):
+    # skip free functions
+    if not isinstance(func, MethodType):
+        return False
+
+    # skip magic and private methods
+    if func.__name__.startswith("_"):
         return False
 
     # verify if the method is implemented in a subclass of `FunctionToolGroup` but not `FunctionToolGroup` itself
@@ -531,11 +534,7 @@ def _is_eligible_function(func: Callable[..., Any]) -> bool:
     # skip functions with mismatched input signature
     sig = inspect.signature(func)
     parameters = list(sig.parameters.values())
-    if not isinstance(func, MethodType):
-        if not parameters or parameters[0].name != "self":
-            # unbound methods must have at least the parameter `self`
-            return False
-        parameters = parameters[1:]
+
     if len(parameters) > 1:
         return False
     elif len(parameters) > 0:
@@ -592,10 +591,79 @@ class FunctionToolGroup:
         return [create_async_invocable(method) for _, method in inspect.getmembers(self, predicate=_is_async_method) if method.__self__ is self]
 
 
-def invocable(func: F) -> F:
-    "Decorator to verify if a member function can be passed to `create_invocable` or `create_async_invocable`."
+Params = ParamSpec("Params")
+Return = TypeVar("Return")
 
-    if isinstance(func, classmethod) or isinstance(func, staticmethod) or not _is_eligible_function(func):
-        raise TypeError(f"expected: a method eligible for function calling; got: {func.__name__}")
+
+def invocable(func: Callable[Params, Return]) -> Callable[Params, Return]:
+    """
+    Decorator to verify if a member function can be passed to `create_invocable` or `create_async_invocable`.
+
+    If the decorator is added to a function not eligible for function calling, it will trigger a :exc:`TypeError`.
+
+    Functions eligible for function calling must be:
+
+    * public
+    * instance methods
+    * have zero or a single input parameter of `B`, `list[B]` or `str` where `B` is a subclass of :class:`ToolBaseModel`
+    * have a return type `None`, `B`, `list[B]` or `str` where `B` is a subclass of :class:`ToolBaseModel`
+
+    Functions eligible for function calling **cannot** be:
+
+    * magic (e.g. `__str__` or `__repr__`)
+    * private
+    * class methods
+    * static methods
+    """
+
+    def raise_exception(kind: str) -> NoReturn:
+        raise TypeError(f"expected: a method eligible for function calling; got {kind}: {func.__name__}")
+
+    if isinstance(func, staticmethod):
+        raise_exception("static method")
+
+    if isinstance(func, classmethod):
+        raise_exception("class method")
+
+    # skip magic methods
+    if func.__name__.startswith("__") and func.__name__.endswith("__"):
+        raise_exception("magic method")
+
+    # skip private methods
+    if func.__name__.startswith("_"):
+        raise_exception("private method")
+
+    # verify if the method is implemented in a subclass of `FunctionToolGroup` but not `FunctionToolGroup` itself
+    if func.__qualname__.startswith(FunctionToolGroup.__name__ + "."):
+        raise_exception(f"method implemented directly in {FunctionToolGroup.__name__}")
+
+    # fetch method signature
+    sig = inspect.signature(func)
+    parameters = list(sig.parameters.values())
+
+    # method object binding has not yet taken place when decorator function is called
+    if not isinstance(func, MethodType):
+        if not parameters or parameters[0].name != "self":
+            # unbound methods must have at least the parameter `self`
+            raise_exception("function whose first parameter is not `self`")
+        parameters = parameters[1:]
+
+    # skip functions with mismatched input signature
+    if len(parameters) > 1:
+        raise_exception("function with more than one parameter")
+    elif len(parameters) > 0:
+        input_param = parameters[0]
+        input_type = input_param.annotation
+        if input_type is inspect.Parameter.empty:
+            raise_exception(f"untyped parameter `{input_param.name}` in function")
+        if not is_func_tool_type(input_type):
+            raise_exception(f"parameter `{input_param.name}` of wrong type in function")
+
+    # skip functions with mismatched output signature
+    output_type = sig.return_annotation
+    if output_type is inspect.Parameter.empty:
+        raise_exception("function with untyped return value")
+    if not is_func_tool_type(output_type):
+        raise_exception("function with wrong return type")
 
     return func

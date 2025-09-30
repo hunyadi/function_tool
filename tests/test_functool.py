@@ -90,6 +90,11 @@ class WeatherForecastTool(FunctionToolGroup):
     def static_function() -> None:
         pass
 
+    def _private(self, data: str) -> str:
+        "A private function that cannot be invoked externally."
+
+        return data
+
     @invocable
     def passthru(self, data: str) -> str:
         "A function that consumes and produces unstructured text."
@@ -128,6 +133,11 @@ class WeatherForecastTool(FunctionToolGroup):
     @invocable
     def get_forecast(self, request: ForecastRequest) -> ForecastResponse:
         return ForecastResponse(weather=Weather(temperature=30, wind=None, humidity=20, precipitation=0, cloudiness=0))
+
+    def _async_private(self, data: str) -> str:
+        "A private function that cannot be invoked externally."
+
+        return data
 
     @invocable
     async def async_passthru(self, data: str) -> str:
@@ -307,6 +317,51 @@ class TestFunctionTool(unittest.TestCase):
         invocable = create_invocable(forecast.get_state)
         with self.assertLogs(level=logging.ERROR):
             self.assertEqual(invocable('{"city":"","country":""}'), '{"status":"failure"}')
+
+    def test_invocable(self) -> None:
+        with self.assertRaises(TypeError):
+
+            @invocable
+            def _() -> None:
+                pass
+
+        with self.assertRaises(TypeError):
+
+            class A:
+                @invocable
+                def _private_method(self) -> None:
+                    pass
+
+            A()
+
+        with self.assertRaises(TypeError):
+
+            class B:
+                @invocable
+                @staticmethod
+                def static_method() -> None:
+                    pass
+
+            B()
+
+        with self.assertRaises(TypeError):
+
+            class C:
+                @invocable
+                @classmethod
+                def class_method(cls) -> None:
+                    pass
+
+            C()
+
+        with self.assertRaises(TypeError):
+
+            class D:
+                @invocable
+                def untyped_method(self, a, b, c):  # type: ignore
+                    pass
+
+            D()
 
 
 class TestAsyncFunctionTool(unittest.IsolatedAsyncioTestCase):
