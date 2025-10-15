@@ -246,17 +246,20 @@ def _function_annotation(input_type: type[Any] | None, output_type: type[Any] | 
     return f"Callable[{param_annotation}, {return_annotation}]"
 
 
-def is_tool_base_model_list(arg_type: type[Any]) -> TypeGuard[type[Sequence[ToolBaseModel]]]:
+def is_tool_base_model(arg_type: Any) -> TypeGuard[type[ToolBaseModel]]:
+    "True if the argument is a type that derives from `ToolBaseModel`."
+
+    return isinstance(arg_type, type) and issubclass(arg_type, ToolBaseModel)
+
+
+def is_tool_base_model_list(arg_type: Any) -> TypeGuard[type[Sequence[ToolBaseModel]]]:
     "True if the argument is the type `list[B]` where `B` derives from `ToolBaseModel`."
 
     if typing.get_origin(arg_type) is not list:
         return False
 
     (item_type,) = typing.get_args(arg_type)
-    if not issubclass(item_type, ToolBaseModel):
-        return False
-
-    return True
+    return is_tool_base_model(item_type)
 
 
 FuncToolType = type[ToolBaseModel] | type[Sequence[ToolBaseModel]] | type[str] | None
@@ -267,7 +270,7 @@ def _name_for_type(object_type: FuncToolType) -> str:
         return "Void"
     elif object_type is str:
         return "String"
-    elif issubclass(object_type, ToolBaseModel):
+    elif is_tool_base_model(object_type):
         return "Model"
     elif is_tool_base_model_list(object_type):
         return "List"
@@ -300,7 +303,7 @@ def _implementation_for_invocable(input_type: FuncToolType, output_type: FuncToo
         generate_input_schema = '{"type": "string"}'
         cast_input_arg = ""
         pass_parameters = "arg"
-    elif issubclass(input_type, ToolBaseModel):
+    elif is_tool_base_model(input_type):
         generate_input_schema = "self.input_type.model_json_schema(schema_generator=GenerateJsonSchemaNoTitles)"
         cast_input_arg = "input_arg = self.input_type.model_validate_json(arg, strict=True)"
         pass_parameters = "input_arg"
@@ -315,7 +318,7 @@ def _implementation_for_invocable(input_type: FuncToolType, output_type: FuncToo
         cast_output_arg = repr(_json_dump({"status": Status.SUCCESS.value}))
     elif output_type is str:
         cast_output_arg = "output_arg"
-    elif issubclass(output_type, ToolBaseModel):
+    elif is_tool_base_model(output_type):
         cast_output_arg = "output_arg.model_dump_json()"
     elif is_tool_base_model_list(output_type):
         cast_output_arg = "self.output_adapter.dump_json(output_arg).decode()"
@@ -424,7 +427,7 @@ from function_tool import {AsyncInvocable.__name__}, {GenerateJsonSchemaNoTitles
 
 
 def is_func_tool_type(arg_type: type[Any] | None) -> TypeGuard[FuncToolType]:
-    return arg_type is None or arg_type is str or issubclass(arg_type, ToolBaseModel) or is_tool_base_model_list(arg_type)
+    return arg_type is None or arg_type is str or is_tool_base_model(arg_type) or is_tool_base_model_list(arg_type)
 
 
 def _get_parameter_type(sig: inspect.Signature) -> FuncToolType:
@@ -510,7 +513,7 @@ def get_schema(func: Callable[..., Any]) -> JsonType:
     input_type = _get_parameter_type(sig)
     if input_type is None:
         return {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
-    elif issubclass(input_type, ToolBaseModel):
+    elif is_tool_base_model(input_type):
         return input_type.model_json_schema(schema_generator=GenerateJsonSchemaNoTitles)
     else:
         return typing.cast(JsonType, TypeAdapter(input_type).json_schema(schema_generator=GenerateJsonSchemaNoTitles))
@@ -551,7 +554,7 @@ def _is_eligible_function(func: Callable[..., Any]) -> bool:
     return True
 
 
-def _is_eligible_method(func: Callable[..., Any]) -> bool:
+def is_eligible_method(func: Callable[..., Any]) -> bool:
     "True if the bound method is eligible for user-defined function calling."
 
     # include bound methods, skip fields, properties, class and static methods
@@ -561,20 +564,31 @@ def _is_eligible_method(func: Callable[..., Any]) -> bool:
     return _is_eligible_function(func)
 
 
-def _is_standard_method(func: Callable[..., Any]) -> bool:
-    return not inspect.iscoroutinefunction(func) and _is_eligible_method(func)
-
-
-def _is_async_method(func: Callable[..., Any]) -> bool:
-    return inspect.iscoroutinefunction(func) and _is_eligible_method(func)
-
-
 class FunctionToolGroup:
     """
     A class whose functions are to be passed to the parameter `tools` when creating a model with the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses).
 
     Derive from this class when implementing your own class with functions exposed for LLM user-defined function calling.
     """
+
+    def _get_invocable_methods(self, predicate: Callable[[MethodType], bool]) -> list[MethodType]:
+        """
+        Returns a list of methods filtered by the predicate, and either the presence of an invocable decorator or general eligibility.
+
+        :param predicate: A predicate to filter functions of interest (e.g. asynchronous methods).
+        :returns: A list of methods eligible to call as a function tool.
+        """
+
+        def _is_candidate_method(method: Callable[..., Any]) -> bool:
+            return isinstance(method, MethodType) and method.__self__ is self and predicate(method)
+
+        filtered = [method for _, method in inspect.getmembers(self, predicate=_is_candidate_method)]
+        if decorated := [method for method in filtered if getattr(method, "__invocable__", False) is True]:
+            # invocable decorator present on at least one method
+            return decorated
+        else:
+            # no invocable decorator on any method, check general eligibility
+            return [method for method in filtered if _is_eligible_function(method)]
 
     @classmethod
     def name(cls) -> str:
@@ -583,12 +597,18 @@ class FunctionToolGroup:
     def invocables(self) -> list[Invocable]:
         "Returns a list of standard (synchronous) functions this tool exposes."
 
-        return [create_invocable(method) for _, method in inspect.getmembers(self, predicate=_is_standard_method) if method.__self__ is self]
+        methods = self._get_invocable_methods(lambda func: not inspect.iscoroutinefunction(func))
+        if not methods:
+            raise ValueError("expected: at least one exposed synchronous function; got: zero")
+        return [create_invocable(method) for method in methods]
 
     def async_invocables(self) -> list[AsyncInvocable]:
         "Returns a list of asynchronous functions this tool exposes."
 
-        return [create_async_invocable(method) for _, method in inspect.getmembers(self, predicate=_is_async_method) if method.__self__ is self]
+        methods = self._get_invocable_methods(lambda func: inspect.iscoroutinefunction(func))
+        if not methods:
+            raise ValueError("expected: at least one exposed asynchronous function; got: zero")
+        return [create_async_invocable(method) for method in methods]
 
 
 Params = ParamSpec("Params")
@@ -666,4 +686,6 @@ def invocable(func: Callable[Params, Return]) -> Callable[Params, Return]:
     if not is_func_tool_type(output_type):
         raise_exception("function with wrong return type")
 
+    # enable runtime introspection
+    setattr(func, "__invocable__", True)  # noqa: B010
     return func

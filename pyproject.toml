@@ -33,14 +33,14 @@ classifiers = [
     "Typing :: Typed"
 ]
 dependencies = [
-    "pydantic >= 2.11",
+    "pydantic >= 2.12",
     "typing_extensions >= 4.15; python_version < '3.12'"
 ]
 dynamic = ["version"]
 
 [project.optional-dependencies]
 dev = [
-    "ruff >= 0.12"
+    "ruff >= 0.14"
 ]
 
 [project.urls]
