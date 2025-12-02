@@ -7,7 +7,7 @@ from uuid import UUID
 
 from pydantic import Field
 
-from function_tool import FunctionToolGroup, ToolBaseModel, create_async_invocable, create_invocable, generate_code, get_schema, invocable
+from function_tool import FunctionToolGroup, RuntimeInjected, ToolBaseModel, create_async_invocable, create_invocable, generate_code, get_schema, invocable
 
 
 class SchemaTypes(ToolBaseModel):
@@ -131,6 +131,11 @@ class WeatherForecastTool(FunctionToolGroup):
         pass
 
     @invocable
+    def use_runtime_args(self, weather: Weather, rarg1: RuntimeInjected[int], rarg2: RuntimeInjected[str]) -> str:
+        "A function that succeeds or fails but has no explicit return value."
+        return f"{weather.humidity}-{rarg1}-{rarg2}"
+
+    @invocable
     def get_forecast(self, request: ForecastRequest) -> ForecastResponse:
         return ForecastResponse(weather=Weather(temperature=30, wind=None, humidity=20, precipitation=0, cloudiness=0))
 
@@ -158,6 +163,11 @@ class WeatherForecastTool(FunctionToolGroup):
     @invocable
     async def async_do_action(self, weather: Weather) -> None:
         pass
+
+    @invocable
+    async def async_use_runtime_args(self, weather: Weather, rarg1: RuntimeInjected[int], rarg2: RuntimeInjected[str]) -> str:
+        "A function that succeeds or fails but has no explicit return value."
+        return f"{weather.humidity}-{rarg1}-{rarg2}"
 
     @invocable
     async def async_get_forecast(self, request: ForecastRequest) -> ForecastResponse:
@@ -192,6 +202,7 @@ class TestFunctionTool(unittest.TestCase):
                 create_invocable(tool.get_locations),
                 create_invocable(tool.get_state),
                 create_invocable(tool.do_action),
+                create_invocable(tool.use_runtime_args),  # type: ignore
                 create_invocable(tool.get_forecast),
             ],
         )
@@ -288,6 +299,7 @@ class TestFunctionTool(unittest.TestCase):
     def test_call(self) -> None:
         forecast = WeatherForecastTool()
         location = forecast.get_location().model_dump_json()
+        weather = Weather(temperature=25, wind=None, humidity=0, precipitation=0, cloudiness=0).model_dump_json()
         invocable = create_invocable(forecast.passthru)
         self.assertEqual(invocable.name, "WeatherForecastTool__passthru")
         self.assertEqual(invocable("a message in a bottle"), "a message in a bottle")
@@ -299,6 +311,10 @@ class TestFunctionTool(unittest.TestCase):
         self.assertEqual(
             invocable('{"forecast_date":"2025-09-09"}'), '{"weather":{"temperature":30.0,"wind":null,"humidity":20,"precipitation":0,"cloudiness":0}}'
         )
+        invocable = create_invocable(forecast.use_runtime_args)  # type: ignore
+        self.assertEqual(invocable(weather, rarg1=1, rarg2="2"), "0-1-2")
+        with self.assertLogs(level=logging.ERROR):
+            self.assertEqual(invocable(weather, rarg1=1), '{"status":"failure"}')
 
     def test_validation(self) -> None:
         forecast = WeatherForecastTool()
@@ -375,6 +391,7 @@ class TestAsyncFunctionTool(unittest.IsolatedAsyncioTestCase):
                 create_async_invocable(tool.async_get_locations),
                 create_async_invocable(tool.async_get_state),
                 create_async_invocable(tool.async_do_action),
+                create_async_invocable(tool.async_use_runtime_args),  # type: ignore
                 create_async_invocable(tool.async_get_forecast),
             ],
         )
@@ -402,6 +419,10 @@ class TestAsyncFunctionTool(unittest.IsolatedAsyncioTestCase):
         invocable = create_async_invocable(forecast.async_get_state)
         with self.assertLogs(level=logging.ERROR):
             self.assertEqual(await invocable('{"city":"","country":""}'), '{"status":"failure"}')
+        invocable = create_async_invocable(forecast.async_use_runtime_args)  # type: ignore
+        self.assertEqual(await invocable(weather, rarg1=1, rarg2="2"), "0-1-2")
+        with self.assertLogs(level=logging.ERROR):
+            self.assertEqual(await invocable(weather, rarg1=1), '{"status":"failure"}')
 
 
 if __name__ == "__main__":
