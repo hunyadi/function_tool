@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from types import CodeType, MethodType
-from typing import Any, NoReturn, ParamSpec, TypeGuard, TypeVar
+from typing import Annotated, Any, NoReturn, ParamSpec, TypeGuard, TypeVar
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic.config import ConfigDict
@@ -88,6 +88,15 @@ class Status(enum.Enum):
 
 class Response(BaseModel):
     status: Status = Field(..., description="Indicates success or failure for calling a function.")
+
+
+class _RuntimeInjectedTagType:
+    pass
+
+
+T = typing.TypeVar("T")
+_RuntimeInjectedTag = _RuntimeInjectedTagType()
+RuntimeInjected = Annotated[T, _RuntimeInjectedTag]
 
 
 class BaseInvocable(ABC):
@@ -165,16 +174,16 @@ class Invocable(BaseInvocable):
     """
 
     @abstractmethod
-    def _execute(self, arg: str) -> str: ...
+    def _execute(self, arg: str, **kwargs: Any) -> str: ...
 
-    def _invoke(self, func: Callable[[str], str], arg: str) -> str:
+    def _invoke(self, func: Callable[..., str], arg: str, **kwargs: Any) -> str:
         try:
-            return func(arg)
+            return func(arg, **kwargs)
         except Exception as ex:
             LOGGER.exception("function `%s` raised an exception", self.name)
             return _handle_exception(ex)
 
-    def __call__(self, arg: str) -> str:
+    def __call__(self, arg: str, **kwargs: Any) -> str:
         """
         Calls an invocable function.
 
@@ -182,7 +191,7 @@ class Invocable(BaseInvocable):
         :returns: The result returned by the function, serialized to a JSON string.
         """
 
-        return self._invoke(self._execute, arg)
+        return self._invoke(self._execute, arg, **kwargs)
 
 
 class AsyncInvocable(BaseInvocable):
@@ -190,17 +199,17 @@ class AsyncInvocable(BaseInvocable):
     Wraps an asynchronous function.
     """
 
-    async def _invoke(self, func: Callable[[str], Awaitable[str]], arg: str) -> str:
+    async def _invoke(self, func: Callable[..., Awaitable[str]], arg: str, **kwargs: Any) -> str:
         try:
-            return await func(arg)
+            return await func(arg, **kwargs)
         except Exception as ex:
             LOGGER.exception("function `%s` raised an exception", self.name)
             return _handle_exception(ex)
 
     @abstractmethod
-    async def _execute(self, arg: str) -> str: ...
+    async def _execute(self, arg: str, **kwargs: Any) -> str: ...
 
-    async def __call__(self, arg: str) -> str:
+    async def __call__(self, arg: str, **kwargs: Any) -> str:
         """
         Calls an invocable function asynchronously.
 
@@ -208,7 +217,7 @@ class AsyncInvocable(BaseInvocable):
         :returns: The result returned by the function, serialized to a JSON string.
         """
 
-        return await self._invoke(self._execute, arg)
+        return await self._invoke(self._execute, arg, **kwargs)
 
 
 def _object_annotation(object_type: type[Any] | None) -> str:
@@ -227,12 +236,7 @@ def _type_annotation(object_type: type[Any] | None) -> str:
         return f"type[{_object_annotation(object_type)}]"
 
 
-def _function_annotation(input_type: type[Any] | None, output_type: type[Any] | None, *, is_async: bool) -> str:
-    if input_type is None:
-        param_annotation = "[]"
-    else:
-        param_annotation = f"[{_object_annotation(input_type)}]"
-
+def _function_annotation(output_type: type[Any] | None, *, is_async: bool) -> str:
     if output_type is None:
         output_annotation = "None"
     else:
@@ -243,7 +247,7 @@ def _function_annotation(input_type: type[Any] | None, output_type: type[Any] | 
     else:
         return_annotation = output_annotation
 
-    return f"Callable[{param_annotation}, {return_annotation}]"
+    return f"Callable[..., {return_annotation}]"
 
 
 def is_tool_base_model(arg_type: Any) -> TypeGuard[type[ToolBaseModel]]:
@@ -299,18 +303,22 @@ def _implementation_for_invocable(input_type: FuncToolType, output_type: FuncToo
         generate_input_schema = '{"type": "object", "properties": {}, "required": [], "additionalProperties": False}'
         cast_input_arg = ""
         pass_parameters = ""
+        kwargs_parameters = "**kwargs"
     elif input_type is str:
         generate_input_schema = '{"type": "string"}'
         cast_input_arg = ""
         pass_parameters = "arg"
+        kwargs_parameters = ", **kwargs"
     elif is_tool_base_model(input_type):
         generate_input_schema = "self.input_type.model_json_schema(schema_generator=GenerateJsonSchemaNoTitles)"
         cast_input_arg = "input_arg = self.input_type.model_validate_json(arg, strict=True)"
         pass_parameters = "input_arg"
+        kwargs_parameters = ", **kwargs"
     elif is_tool_base_model_list(input_type):
         generate_input_schema = f"{TypeAdapter.__name__}(self.input_type).json_schema(schema_generator=GenerateJsonSchemaNoTitles)"
         cast_input_arg = "input_arg = self.input_adapter.validate_json(arg, strict=True)"
         pass_parameters = "input_arg"
+        kwargs_parameters = ", **kwargs"
     else:
         raise TypeError(f"expected: zero parameters, a single parameter of type `B`, `list[B]` or `str` where `B` derives from `{ToolBaseModel.__name__}`")
 
@@ -330,7 +338,7 @@ def _implementation_for_invocable(input_type: FuncToolType, output_type: FuncToo
     else:
         assign_result = "output_arg = "
 
-    function_sig = _function_annotation(input_type, output_type, is_async=is_async)
+    function_sig = _function_annotation(output_type, is_async=is_async)
     input_sig = _type_annotation(input_type)
     output_sig = _type_annotation(output_type)
 
@@ -372,9 +380,9 @@ class {_name_for_invocable(input_type, output_type, is_async=is_async)}({base}):
         return {generate_input_schema}
 
     @override
-    {async_decl}def _execute(self, arg: str) -> str:
+    {async_decl}def _execute(self, arg: str, **kwargs: Any) -> str:
         {cast_input_arg}
-        {assign_result}{await_decl}self.func({pass_parameters})
+        {assign_result}{await_decl}self.func({pass_parameters}{kwargs_parameters})
         return {cast_output_arg}
 """
     return class_code
@@ -430,12 +438,20 @@ def is_func_tool_type(arg_type: type[Any] | None) -> TypeGuard[FuncToolType]:
     return arg_type is None or arg_type is str or is_tool_base_model(arg_type) or is_tool_base_model_list(arg_type)
 
 
+def _is_runtime_injected_parameter(param: inspect.Parameter) -> bool:
+    "True if the parameter is annotated with `RuntimeInjected`."
+    if typing.get_origin(param.annotation) is not typing.Annotated:
+        return False
+    metadata = param.annotation.__metadata__
+    return len(metadata) == 1 and metadata[0] is _RuntimeInjectedTag
+
+
 def _get_parameter_type(sig: inspect.Signature) -> FuncToolType:
-    if len(sig.parameters) > 1:
+    parameters = [param for param in sig.parameters.values() if not _is_runtime_injected_parameter(param)]
+    if len(parameters) > 1:
         raise TypeError("expected: zero or one input parameter for a tool function")
-    elif len(sig.parameters) > 0:
-        input_param = next(iter(sig.parameters.values()))
-        input_type = input_param.annotation
+    elif len(parameters) > 0:
+        input_type = parameters[0].annotation
         if input_type is inspect.Parameter.empty:
             raise TypeError("expected: a typed input parameter for a tool function")
         if not is_func_tool_type(input_type):
@@ -537,6 +553,9 @@ def _is_eligible_function(func: Callable[..., Any]) -> bool:
     # skip functions with mismatched input signature
     sig = inspect.signature(func)
     parameters = list(sig.parameters.values())
+
+    # remove runtime injected parameters
+    parameters = [param for param in parameters if not _is_runtime_injected_parameter(param)]
 
     if len(parameters) > 1:
         return False
@@ -660,6 +679,9 @@ def invocable(func: Callable[Params, Return]) -> Callable[Params, Return]:
     # fetch method signature
     sig = inspect.signature(func)
     parameters = list(sig.parameters.values())
+
+    # remove runtime injected parameters
+    parameters = [param for param in parameters if not _is_runtime_injected_parameter(param)]
 
     # method object binding has not yet taken place when decorator function is called
     if not isinstance(func, MethodType):
