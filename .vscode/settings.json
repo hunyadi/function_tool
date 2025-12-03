@@ -16,8 +16,13 @@
     },
     "python.analysis.typeCheckingMode": "strict",
     "cSpell.words": [
+        "Hunyadi",
         "invocables",
+        "Levente",
         "passthru",
-        "Pydantic"
+        "Pydantic",
+        "rarg",
+        "setuptools",
+        "Veszprém"
     ]
 }

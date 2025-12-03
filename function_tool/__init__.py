@@ -4,6 +4,14 @@ Universal wrapper for Python functions to be used with LLM function calling.
 :see: https://github.com/hunyadi/function_tool
 """
 
+__version__ = "0.1.1"
+__author__ = "Levente Hunyadi"
+__copyright__ = "Copyright 2025, Levente Hunyadi"
+__license__ = "MIT"
+__maintainer__ = "Levente Hunyadi"
+__status__ = "Production"
+
+
 import enum
 import inspect
 import json
@@ -25,13 +33,6 @@ if sys.version_info >= (3, 12):
     from typing import override as override
 else:
     from typing_extensions import override as override
-
-__version__ = "0.1.0"
-__author__ = "Levente Hunyadi"
-__copyright__ = "Copyright 2025, Levente Hunyadi"
-__license__ = "MIT"
-__maintainer__ = "Levente Hunyadi"
-__status__ = "Production"
 
 LOGGER = logging.getLogger(__name__)
 
