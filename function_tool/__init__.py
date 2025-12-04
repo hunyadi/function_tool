@@ -4,7 +4,7 @@ Universal wrapper for Python functions to be used with LLM function calling.
 :see: https://github.com/hunyadi/function_tool
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __author__ = "Levente Hunyadi"
 __copyright__ = "Copyright 2025, Levente Hunyadi"
 __license__ = "MIT"
@@ -24,7 +24,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from functools import partial
 from pathlib import Path
 from types import CodeType, MethodType
-from typing import Annotated, Any, NoReturn, ParamSpec, Self, TypeGuard, TypeVar
+from typing import Annotated, Any, NoReturn, ParamSpec, TypeGuard, TypeVar
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic.config import ConfigDict
@@ -195,8 +195,8 @@ class Invocable(BaseInvocable):
 
         return self._invoke(self._execute, arg, **kwargs)
 
-    def bind(self, **kwargs: Any) -> Self:
-        return typing.cast(Self, _PartialInvocable(self, **kwargs))
+    def bind(self, **kwargs: Any) -> "Invocable":
+        return typing.cast(Invocable, _PartialInvocable(self, **kwargs))
 
 
 class AsyncInvocable(BaseInvocable):
@@ -224,8 +224,8 @@ class AsyncInvocable(BaseInvocable):
 
         return await self._invoke(self._execute, arg, **kwargs)
 
-    def bind(self, **kwargs: Any) -> Self:
-        return typing.cast(Self, _AsyncPartialInvocable(self, **kwargs))
+    def bind(self, **kwargs: Any) -> "AsyncInvocable":
+        return typing.cast(AsyncInvocable, _AsyncPartialInvocable(self, **kwargs))
 
 
 def _check_partial_application(sig: inspect.Signature, **kwargs: Any) -> None:
@@ -242,31 +242,37 @@ def _check_partial_application(sig: inspect.Signature, **kwargs: Any) -> None:
 class _PartialInvocable:
     """Proxy class for Invocable which bound partial arguments."""
 
+    _obj: Invocable
+    _partial: Callable[..., Any]
+
     def __init__(self, obj: Invocable, *args: Any, **kwargs: Any) -> None:
         _check_partial_application(inspect.signature(obj.function), **kwargs)
-        self.obj = obj
+        self._obj = obj
         self._partial = partial(obj, *args, **kwargs)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._partial(*args, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self.obj, name)
+        return getattr(self._obj, name)
 
 
 class _AsyncPartialInvocable:
     """Proxy class for AsyncInvocable which bound partial arguments."""
 
+    _obj: AsyncInvocable
+    _partial: Callable[..., Any]
+
     def __init__(self, obj: AsyncInvocable, *args: Any, **kwargs: Any) -> None:
         _check_partial_application(inspect.signature(obj.function), **kwargs)
-        self.obj = obj
+        self._obj = obj
         self._partial = partial(obj, *args, **kwargs)
 
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return await self._partial(*args, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self.obj, name)
+        return getattr(self._obj, name)
 
 
 def _object_annotation(object_type: type[Any] | None) -> str:
