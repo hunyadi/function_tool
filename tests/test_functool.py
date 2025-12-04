@@ -379,6 +379,17 @@ class TestFunctionTool(unittest.TestCase):
 
             D()
 
+    def test_runtime_injected_binding(self) -> None:
+        forecast = WeatherForecastTool()
+        weather = Weather(temperature=25, wind=None, humidity=0, precipitation=0, cloudiness=0).model_dump_json()
+        invocable = create_invocable(forecast.use_runtime_args)  # type: ignore
+        with self.assertLogs(level=logging.ERROR):
+            self.assertEqual(invocable(weather), '{"status":"failure"}')
+        with self.assertRaises(TypeError):
+            invocable = invocable.bind(rarg1=1)
+        invocable = invocable.bind(rarg1=1, rarg2="2")
+        self.assertEqual(invocable(weather), "0-1-2")
+
 
 class TestAsyncFunctionTool(unittest.IsolatedAsyncioTestCase):
     async def test_invocables(self) -> None:
@@ -423,6 +434,17 @@ class TestAsyncFunctionTool(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await invocable(weather, rarg1=1, rarg2="2"), "0-1-2")
         with self.assertLogs(level=logging.ERROR):
             self.assertEqual(await invocable(weather, rarg1=1), '{"status":"failure"}')
+
+    async def test_runtime_injected_binding(self) -> None:
+        forecast = WeatherForecastTool()
+        weather = Weather(temperature=25, wind=None, humidity=0, precipitation=0, cloudiness=0).model_dump_json()
+        invocable = create_async_invocable(forecast.async_use_runtime_args)  # type: ignore
+        with self.assertLogs(level=logging.ERROR):
+            self.assertEqual(await invocable(weather), '{"status":"failure"}')
+        with self.assertRaises(TypeError):
+            invocable = invocable.bind(rarg1=1)
+        invocable = invocable.bind(rarg1=1, rarg2="2")
+        self.assertEqual(await invocable(weather), "0-1-2")
 
 
 if __name__ == "__main__":

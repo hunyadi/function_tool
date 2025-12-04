@@ -21,9 +21,10 @@ import textwrap
 import typing
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
+from functools import partial
 from pathlib import Path
 from types import CodeType, MethodType
-from typing import Annotated, Any, NoReturn, ParamSpec, TypeGuard, TypeVar
+from typing import Annotated, Any, NoReturn, ParamSpec, Self, TypeGuard, TypeVar
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic.config import ConfigDict
@@ -194,6 +195,9 @@ class Invocable(BaseInvocable):
 
         return self._invoke(self._execute, arg, **kwargs)
 
+    def bind(self, **kwargs: Any) -> Self:
+        return typing.cast(Self, _PartialInvocable(self, **kwargs))
+
 
 class AsyncInvocable(BaseInvocable):
     """
@@ -219,6 +223,50 @@ class AsyncInvocable(BaseInvocable):
         """
 
         return await self._invoke(self._execute, arg, **kwargs)
+
+    def bind(self, **kwargs: Any) -> Self:
+        return typing.cast(Self, _AsyncPartialInvocable(self, **kwargs))
+
+
+def _check_partial_application(sig: inspect.Signature, **kwargs: Any) -> None:
+    """Check that all runtime injected parameters are provided, and no unexpected parameters are given."""
+    parameters = (param for param in sig.parameters.values() if _is_runtime_injected_parameter(param))
+    for param in parameters:
+        if param.name not in kwargs:
+            raise TypeError(f"missing runtime injected parameter `{param.name}`")
+        kwargs.pop(param.name)
+    if kwargs:
+        raise TypeError(f"unexpected parameters for partial application: {', '.join(kwargs.keys())}")
+
+
+class _PartialInvocable:
+    """Proxy class for Invocable which bound partial arguments."""
+
+    def __init__(self, obj: Invocable, *args: Any, **kwargs: Any) -> None:
+        _check_partial_application(inspect.signature(obj.function), **kwargs)
+        self.obj = obj
+        self._partial = partial(obj, *args, **kwargs)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self._partial(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.obj, name)
+
+
+class _AsyncPartialInvocable:
+    """Proxy class for AsyncInvocable which bound partial arguments."""
+
+    def __init__(self, obj: AsyncInvocable, *args: Any, **kwargs: Any) -> None:
+        _check_partial_application(inspect.signature(obj.function), **kwargs)
+        self.obj = obj
+        self._partial = partial(obj, *args, **kwargs)
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._partial(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.obj, name)
 
 
 def _object_annotation(object_type: type[Any] | None) -> str:
